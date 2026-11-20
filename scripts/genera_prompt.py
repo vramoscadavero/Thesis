@@ -165,7 +165,7 @@ def genera_prompt_feret(csv_feret, json_soglie_glint, out_dir, phrases=FRASI3):
 if __name__ == "__main__":
     root = Path(__file__).resolve().parents[1]
 
-    csv_feret = root / "data" / "feret" / "OFIQ" / "ofiq_feret_00000.csv"
+    csv_feret = root / "data" / "cfd" / "OFIQ" / "ofiq_cfd_00000.csv"
     json_soglie_glint = (
         root / "outputs" / "LLM" / "glint" / "percentiles.json"
     )
