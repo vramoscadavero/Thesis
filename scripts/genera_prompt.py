@@ -10,7 +10,6 @@ TEST_SIZE = 0.2
 SEED = 42
 CLASS_NAMES = ("worse", "bad", "very_low", "low", "medium", "high")
 
-# Ogni tupla: (problema forte, problema lieve, ok)
 FRASI3 = {
     "EyesOpen": ("eyes closed or mostly closed", "eyes partly closed", "eyes open"),
     "ExpressionNeutrality": ("clearly non-neutral expression", "slightly non-neutral expression", "neutral expression"),
@@ -23,8 +22,6 @@ FRASI3 = {
     "MarginBelowTheFace": ("improper space below the face", "slightly improper space below the face", "proper space below the face"),
 }
 
-# Fascia di percentile -> indice nella tupla di FRASI3
-# 0 = problema forte, 1 = problema lieve, 2 = ok
 CLASS_TO_PHRASE = {
     "worse": 0,
     "bad": 0,
@@ -141,3 +138,41 @@ def genera_prompt(csv_path, out_dir, percentiles=PERCENTILES,
     dataset = build_dataset(scores, set(train.index), thresholds, phrases)
     dataset.to_csv(Path(out_dir) / "prompt_ofiq_percentili.csv", index=False)
     return dataset
+
+
+def genera_prompt_feret(csv_feret, json_soglie_glint, out_dir, phrases=FRASI3):
+    df_feret = load_data(csv_feret)
+    scores_feret = select_data(df_feret)
+
+    thresholds_glint = load_threshold(json_soglie_glint)
+
+    dataset = build_dataset(
+        scores=scores_feret,
+        train_index=set(), 
+        thresholds=thresholds_glint,
+        phrases=phrases,
+    )
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_csv = out_dir / "prompt_feret_soglie_glint.csv"
+    dataset.to_csv(output_csv, index=False)
+
+    print(f"Prompt salvati in: {output_csv}")
+    return dataset
+
+
+if __name__ == "__main__":
+    root = Path(__file__).resolve().parents[1]
+
+    csv_feret = root / "data" / "feret" / "OFIQ" / "ofiq_feret_00000.csv"
+    json_soglie_glint = (
+        root / "outputs" / "LLM" / "glint" / "percentiles.json"
+    )
+    out_dir = root / "outputs" / "LLM" / "feret"
+
+    genera_prompt_feret(
+        csv_feret=csv_feret,
+        json_soglie_glint=json_soglie_glint,
+        out_dir=out_dir,
+    )
