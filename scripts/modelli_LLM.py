@@ -22,7 +22,7 @@ modelli = [
 
 SERVER_URL = "http://127.0.0.1:18080"
 
-results_dir = Path("./outputs/LLM/glint")
+results_dir = Path("./outputs/LLM/cfd")
 results_dir.mkdir(parents=True, exist_ok=True)
 
 def chiama_modello_testo(prompt):
@@ -46,7 +46,7 @@ def chiama_modello_testo(prompt):
     return testo, tempo, dati["usage"]["prompt_tokens"], dati["usage"]["completion_tokens"]
 
 def main():
-    dataset = genera_prompt("data/glint/ofiq_glint_10000.csv", results_dir)
+    dataset = genera_prompt("data/cfd/OFIQ/ofiq_cfd_00000.csv", results_dir)
 
     csv_path = results_dir / f"risultati_llm_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     campi = ["timestamp", "modello", "file", "prompt", "risposta",
