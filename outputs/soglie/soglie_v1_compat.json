@@ -1,0 +1,41 @@
+{
+  "FaceOcclusionPrevention": {
+    "method": "binary",
+    "thresholds": [
+      94.0
+    ],
+    "names": [
+      "very_low",
+      "high"
+    ],
+    "source": "etichette feret (face_occluded), scelta su meta' dei soggetti, misura sull'altra (x20)",
+    "status": "validated",
+    "n": 2722
+  },
+  "ExpressionNeutrality": {
+    "method": "binary",
+    "thresholds": [
+      78.0
+    ],
+    "names": [
+      "very_low",
+      "high"
+    ],
+    "source": "etichette cfd (not_neutral), scelta su meta' dei soggetti, misura sull'altra (x20)",
+    "status": "validated",
+    "n": 1433
+  },
+  "MouthClosed": {
+    "method": "binary",
+    "thresholds": [
+      93.0
+    ],
+    "names": [
+      "very_low",
+      "high"
+    ],
+    "source": "etichette cfd (mouth_open), scelta su meta' dei soggetti, misura sull'altra (x20)",
+    "status": "validated",
+    "n": 1130
+  }
+}

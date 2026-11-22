@@ -1,178 +1,137 @@
+import argparse
 import json
-import datetime
-import numpy as np
 from pathlib import Path
-import pandas as pd
-from sklearn.model_selection import train_test_split
 
-PERCENTILES = (5, 10, 25, 50, 75)
-TEST_SIZE = 0.2
-SEED = 42
-CLASS_NAMES = ("worse", "bad", "very_low", "low", "medium", "high")
+import polars as pl
 
-FRASI3 = {
-    "EyesOpen": ("eyes closed or mostly closed", "eyes partly closed", "eyes open"),
-    "ExpressionNeutrality": ("clearly non-neutral expression", "slightly non-neutral expression", "neutral expression"),
-    "NoHeadCoverings": ("head covering clearly visible", "partial head covering", "no head covering"),
-    "BackgroundUniformity": ("cluttered, non-uniform background", "slightly uneven background", "uniform background"),
-    "IlluminationUniformity": ("strongly uneven lighting on the face", "slightly uneven lighting", "even lighting on the face"),
-    "LuminanceMean": ("image clearly too dark or too bright", "image slightly too dark or bright", "well exposed image"),
-    "HeadSize": ("head too small in the frame", "head slightly small in the frame", "head of adequate size"),
-    "MarginAboveTheFace": ("improper space above the head", "slightly improper space above the head", "proper space above the head"),
-    "MarginBelowTheFace": ("improper space below the face", "slightly improper space below the face", "proper space below the face"),
+from genera_soglie import read_many
+
+# fatto -> (frase difetto, frase aspetto positivo)
+FACTS = {
+    "eyes_closed": ("eyes closed", "eyes open"),
+    "face_occluded": ("face partly covered (for example by glasses)", "face unobstructed"),
+    "eyes_covered": ("eyes partly covered", "eyes clearly visible"),
+    "head_covering": ("head covering present", "no head covering"),
+    "not_neutral": ("non-neutral expression", "neutral expression"),
+    "not_neutral_tono": ("non-neutral expression", "neutral expression"),
+    "mouth_open": ("mouth open", "mouth closed"),
+    "blurry": ("blurry image", "sharp image"),
+    "bad_exposure": ("badly exposed image", "well exposed image"),
+    "uneven_light": ("uneven lighting on the face", "even lighting on the face"),
+    "bad_background": ("non-uniform background", "uniform background"),
 }
-
-CLASS_TO_PHRASE = {
-    "worse": 0,
-    "bad": 0,
-    "very_low": 0,
-    "low": 1,
-    "medium": 2,
-    "high": 2,
-}
-assert set(CLASS_TO_PHRASE) == set(CLASS_NAMES), "CLASS_TO_PHRASE e CLASS_NAMES non coincidono"
+# gravita' decrescente: decide quali fatti restano quando sono troppi
+PRIORITY = ["eyes_closed", "face_occluded", "eyes_covered", "head_covering", "not_neutral", "mouth_open",
+            "blurry", "bad_exposure", "uneven_light", "bad_background"]
+# fatti che non dipendono dalla geometria del volto frontale: restano anche con la testa molto girata
+# (dalla mappa di correlazione su FERET: espressione, bocca, copricapo e i fattori ambientali)
+ROBUST = {"head_covering", "not_neutral", "not_neutral_tono", "mouth_open", "blurry", "bad_exposure",
+          "uneven_light", "bad_background"}
+POSE_DEFAULT = {"turned": 98, "strongly_turned": 65}   # usati solo se mancano nel JSON
 
 
-def load_data(file_path):
-    return pd.read_csv(file_path, sep=";").dropna(axis=1, how="all")
-
-
-def select_data(df):
-    scores = df.set_index("Filename").filter(regex=r"\.native$")
-    return scores.rename(columns=lambda c: c.removesuffix(".native"))
-
-
-def split_data(df, test_size, seed):
-    # NB: split casuale. Se ci sono più foto della stessa persona, usare
-    # uno split per identità (es. GroupShuffleSplit) per evitare leakage.
-    return train_test_split(df, test_size=test_size, random_state=seed)
-
-
-def compute_threshold(train, percentiles):
-    assert len(CLASS_NAMES) == len(percentiles) + 1, (
-        f"servono len(percentiles)+1 = {len(percentiles) + 1} nomi di fascia, "
-        f"ce ne sono {len(CLASS_NAMES)}"
-    )
-    res = {}
-    for c in train.columns:
-        y = train[c][train[c] >= 0].to_numpy(dtype=float)
-        if len(y) == 0:
+def load_facts(soglie_path, include_status=("validated",), include_unconfirmed=False):
+    meta = json.loads(Path(soglie_path).read_text())
+    facts, pose, seen = [], dict(POSE_DEFAULT), set()
+    for r in meta["facts"]:
+        if r["fact"] in pose and r["status"] == "validated":
+            pose[r["fact"]] = r["threshold"]
             continue
-        values = np.percentile(y, percentiles)
-        res[c] = {
-            "percentiles": list(percentiles),
-            "thresholds": values.tolist(),
-            "n": int(len(y)),
-        }
-    return res
-
-
-def save_threshold(res, upload_path, name=None):
-    folder = Path(upload_path)
-    folder.mkdir(parents=True, exist_ok=True)
-    if name is None:
-        name = f"percentiles_{datetime.datetime.now():%Y%m%d_%H%M%S}.json"
-    path = folder / name
-    with open(path, "w") as f:
-        json.dump(res, f, indent=2)
-    return path
-
-
-def load_threshold(path):
-    with open(path) as f:
-        return json.load(f)
-
-
-def classify(component, score, thresholds, names=CLASS_NAMES):
-    cuts = thresholds[component]["thresholds"]
-    return names[int(np.digitize(score, cuts))]
-
-
-def build_facts(row, thresholds, phrases):
-    """Restituisce (lista problemi, lista aspetti buoni)."""
-    neg, pos = [], []
-    for c, phr in phrases.items():
-        if c not in thresholds or pd.isna(row[c]) or row[c] < 0:
+        if r["fact"] not in FACTS or r["status"] not in include_status:
             continue
-        idx = CLASS_TO_PHRASE[classify(c, row[c], thresholds)]
-        (pos if idx == 2 else neg).append(phr[idx])
-    return neg, pos
+        if r.get("needs_confirmation") and not include_unconfirmed:
+            continue
+        if r["component"] in seen or r["fact"] not in PRIORITY and r["fact"] != "not_neutral_tono":
+            continue                                    # una sola regola per componente (la prima validata)
+        seen.add(r["component"])
+        facts.append({"fact": r["fact"], "component": r["component"], "threshold": float(r["threshold"])})
+    return facts, pose
+
+
+def pose_level(yaw, pose):
+    if yaw is None or yaw != yaw:
+        return "unknown"
+    if yaw < pose["strongly_turned"]:
+        return "strong"
+    if yaw < pose["turned"]:
+        return "mild"
+    return "ok"
+
+
+def build_facts(row, facts, pose, max_issues, max_good):
+    level = pose_level(row.get("HeadPoseYawFrontal.scalar"), pose)
+    issues, good = [], []                              # liste di nomi-fatto
+    if level == "strong":
+        issues_txt = ["head strongly turned (not facing the camera)"]
+    elif level == "mild":
+        issues_txt = ["head slightly turned"]
+    else:
+        issues_txt = []
+    good_txt = ["head facing the camera"] if level == "ok" else []
+    cand_i, cand_g = [], []
+    for f in facts:
+        v = row.get(f"{f['component']}.scalar")
+        if v is None or v != v:
+            continue
+        if level == "strong" and f["fact"] not in ROBUST:
+            continue
+        (cand_i if v < f["threshold"] else cand_g).append(f["fact"])
+    rank = lambda name: PRIORITY.index(name) if name in PRIORITY else len(PRIORITY)
+    cand_i.sort(key=rank)
+    cand_g.sort(key=rank)
+    n_i = max(0, max_issues - len(issues_txt))
+    n_g = max(0, max_good - len(good_txt))
+    issues += cand_i[:n_i]
+    good += cand_g[:n_g]
+    return (issues_txt + [FACTS[x][0] for x in issues], good_txt + [FACTS[x][1] for x in good],
+            ([f"pose_{level}"] if issues_txt else []) + issues, (["pose_ok"] if good_txt else []) + good, level)
 
 
 def build_prompt(issues, good):
-    return (
-        "Describe a passport-style face photo in at most 2 sentences (max 45 words), "
-        "using ONLY the facts below. Do not mention numbers or add other details.\n"
-        f"Issues: {issues}\n"
-        f"Good aspects: {good}"
-    )
+    return ("Describe a passport-style face photo in at most 2 sentences (max 45 words), using ONLY the facts "
+            "below. Do not mention numbers, and do not infer identity, age, gender, emotion or any detail that "
+            "is not listed. If Issues is none, say that no problems were found.\n"
+            f"Issues: {'; '.join(issues) or 'none'}.\n"
+            f"Good aspects: {'; '.join(good) or 'none'}.")
 
 
-def build_dataset(scores, train_index, thresholds, phrases):
+def genera_prompt_soglie(ofiq_paths, soglie_path, out_csv, max_issues=4, max_good=3, split="test",
+                         include_status=("validated",), include_unconfirmed=False):
+    facts, pose = load_facts(soglie_path, include_status, include_unconfirmed)
+    df = read_many(ofiq_paths)
+    scal = ["Filename"] + [c for c in df.columns if c.endswith(".scalar")]
     rows = []
-    for path, row in scores.iterrows():
-        neg, pos = build_facts(row, thresholds, phrases)
-        issues = "; ".join(neg) or "none"
-        good = "; ".join(pos) or "none"
-        rows.append({
-            "file": Path(path).name,
-            "split": "train" if path in train_index else "test",
-            "issues": issues,
-            "good": good,
-            "issues_list": json.dumps(neg),
-            "good_list": json.dumps(pos),
-            "prompt": build_prompt(issues, good),
-        })
-    return pd.DataFrame(rows)
+    for row in df.select(scal).iter_rows(named=True):
+        i_txt, g_txt, i_f, g_f, level = build_facts(row, facts, pose, max_issues, max_good)
+        rows.append({"path": row["Filename"], "file": Path(row["Filename"]).name, "split": split,
+                     "issues": "; ".join(i_txt) or "none", "good": "; ".join(g_txt) or "none",
+                     "issues_list": json.dumps(i_txt), "good_list": json.dumps(g_txt),
+                     "issue_facts": json.dumps(i_f), "good_facts": json.dumps(g_f), "pose_level": level,
+                     "prompt": build_prompt(i_txt, g_txt)})
+    out = pl.DataFrame(rows)
+    Path(out_csv).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    out.write_csv(Path(out_csv).expanduser())
+    print(f"fatti usati: {[f['fact'] for f in facts]}")
+    print(f"soglie posa: {pose}")
+    print(f"prompt scritti: {out.height} -> {out_csv}")
+    print("livelli di posa:", dict(out['pose_level'].value_counts().iter_rows()))
+    return out
 
 
-def genera_prompt(csv_path, out_dir, percentiles=PERCENTILES,
-                  test_size=TEST_SIZE, seed=SEED, phrases=FRASI3):
-    df = load_data(csv_path)
-    scores = select_data(df)
-    train, _ = split_data(scores, test_size, seed)
-
-    thresholds = compute_threshold(train, percentiles)
-    save_threshold(thresholds, out_dir, name="percentiles.json")
-
-    dataset = build_dataset(scores, set(train.index), thresholds, phrases)
-    dataset.to_csv(Path(out_dir) / "prompt_ofiq_percentili.csv", index=False)
-    return dataset
-
-
-def genera_prompt_feret(csv_feret, json_soglie_glint, out_dir, phrases=FRASI3):
-    df_feret = load_data(csv_feret)
-    scores_feret = select_data(df_feret)
-
-    thresholds_glint = load_threshold(json_soglie_glint)
-
-    dataset = build_dataset(
-        scores=scores_feret,
-        train_index=set(), 
-        thresholds=thresholds_glint,
-        phrases=phrases,
-    )
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    output_csv = out_dir / "prompt_feret_soglie_glint.csv"
-    dataset.to_csv(output_csv, index=False)
-
-    print(f"Prompt salvati in: {output_csv}")
-    return dataset
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ofiq", nargs="+", required=True, help="uno o piu' CSV OFIQ")
+    ap.add_argument("--soglie", required=True, help="soglie_v*.json di genera_soglie.py (quello completo)")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--max-issues", type=int, default=4)
+    ap.add_argument("--max-good", type=int, default=3)
+    ap.add_argument("--split", default="test")
+    ap.add_argument("--include-status", nargs="*", default=["validated"], help="es. validated weak")
+    ap.add_argument("--include-unconfirmed", action="store_true")
+    a = ap.parse_args()
+    genera_prompt_soglie(a.ofiq, a.soglie, a.out, a.max_issues, a.max_good, a.split, tuple(a.include_status),
+                         a.include_unconfirmed)
 
 
 if __name__ == "__main__":
-    root = Path(__file__).resolve().parents[1]
-
-    csv_feret = root / "data" / "cfd" / "OFIQ" / "ofiq_cfd_00000.csv"
-    json_soglie_glint = (
-        root / "outputs" / "LLM" / "glint" / "percentiles.json"
-    )
-    out_dir = root / "outputs" / "LLM" / "feret"
-
-    genera_prompt_feret(
-        csv_feret=csv_feret,
-        json_soglie_glint=json_soglie_glint,
-        out_dir=out_dir,
-    )
+    main()
