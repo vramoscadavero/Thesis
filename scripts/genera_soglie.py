@@ -1,19 +1,3 @@
-"""Genera le soglie per il prompt dagli score OFIQ di Glint, FERET, CFD e TONO.
-
-Convenzione: si usano solo gli scalar (0-100, alto = meglio). Un fatto "difetto" scatta se
-scalar < soglia. Per ogni coppia (componente, fatto) lo script:
-  1. costruisce i positivi (immagini con il difetto) e i negativi (senza) dalle etichette;
-  2. sceglie la soglia su meta' dei soggetti (massimo J = TPR - FPR, rispettando TPR/FPR minimi);
-  3. misura TPR/FPR sull'altra meta' (ripetuto K volte con divisioni diverse);
-  4. segna lo stato: validated / weak / insufficient_data / no_data.
-Per la posa converte i valori ICAO (gradi) in scalar. Per i componenti senza etichette usa un
-percentile del dataset di riferimento, segnato come "relative" (o "saturated_binary").
-Scrive un JSON completo con la fonte di ogni soglia e uno compatibile con genera_prompt.py.
-
-Uso:
-  python genera_soglie.py --glint data/glint/*.csv --feret data/feret/OFIQ/*.csv --feret-recordings data/feret/dvd1_recordings.csv \
-      --cfd data/cfd/OFIQ/*.csv --cfd-manifest data/cfd/manifest.csv --tono data/tono/ofiq_tono_completo.csv --out outputs/soglie/soglie_v1.json
-"""
 import argparse
 import datetime
 import json
@@ -22,15 +6,14 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-GRID = np.arange(1, 101)          # soglie candidate: scatta se scalar < t  (t=100: qualsiasi calo)
-SAT_FRAC = 0.9                    # quota di scalar >= 99 oltre cui un componente e' saturo
+GRID = np.arange(1, 101)         
+SAT_FRAC = 0.9           
 
-# ICAO (gradi) -> convertiti in scalar con la mappatura di OFIQ misurata sui dati
 STANDARD = [("HeadPoseYawFrontal", 5.0, "turned_icao"),
             ("HeadPosePitchFrontal", 5.0, "pitch_icao"),
             ("HeadPoseRollFrontal", 8.0, "roll_icao")]
 
-PHRASES = {  # frase suggerita per il prompt (inglese, come in genera_prompt.py)
+PHRASES = {
     "eyes_covered": "eyes partly covered", "face_occluded": "face partly occluded",
     "turned": "head turned", "strongly_turned": "head strongly turned",
     "not_neutral": "non-neutral expression", "not_neutral_tono": "non-neutral expression",
@@ -40,7 +23,6 @@ PHRASES = {  # frase suggerita per il prompt (inglese, come in genera_prompt.py)
 }
 
 
-# ---------------------------------------------------------------- caricamento
 def read_ragged(path, sep):
     """Righe con il separatore dentro al Filename: le ultime N-1 colonne sono numeri, il resto e' il Filename."""
     rows = []
@@ -91,7 +73,7 @@ def prep_glint(df):
     return df.with_columns(pl.lit("glint").alias("dataset"), pl.col("stem").alias("subject"))
 
 
-def prep_tono(df):   # la sottocartella e' l'etichetta; senza id persona il "soggetto" e' il file
+def prep_tono(df):  
     return df.with_columns(pl.lit("tono").alias("dataset"), pl.col("stem").alias("subject"))
 
 
@@ -114,7 +96,6 @@ def prep_feret(df, recordings):
     return df.join(rec, on="stem", how="left").with_columns(pl.lit("feret").alias("dataset"))
 
 
-# ---------------------------------------------------------------- regole
 def feret():
     return pl.col("dataset") == "feret"
 
@@ -131,14 +112,14 @@ def tono(*folders):
     return (pl.col("dataset") == "tono") & pl.col("folder").is_in(list(folders))
 
 
-def tono_other(*folders):   # negativi: le altre cartelle TONO (possono avere altri difetti: FPR prudente)
+def tono_other(*folders):  
     return (pl.col("dataset") == "tono") & ~pl.col("folder").is_in(list(folders))
 
 
 GLASSES = dict(pos=lambda: frontal() & (pl.col("glasses") == "Yes"),
                neg=lambda: frontal() & (pl.col("glasses") == "No"))
 
-# confirmed=False: significato delle cartelle TONO da confermare col tutor
+
 RULES = [
     dict(comp="EyesVisible", fact="eyes_covered", **GLASSES),
     dict(comp="FaceOcclusionPrevention", fact="face_occluded", **GLASSES),
@@ -167,7 +148,7 @@ RULES = [
 ]
 
 
-# ---------------------------------------------------------------- statistica
+
 def rates(pos, neg, grid=GRID):
     tpr = (pos[:, None] < grid[None, :]).mean(axis=0)
     fpr = (neg[:, None] < grid[None, :]).mean(axis=0)
@@ -179,8 +160,8 @@ def choose(pos, neg, min_tpr, max_fpr):
     j = tpr - fpr
     ok = (tpr >= min_tpr) & (fpr <= max_fpr)
     score = np.where(ok, j, -np.inf) if ok.any() else j
-    best = np.flatnonzero(score >= score.max() - 1e-9)      # plateau di soglie equivalenti
-    return int(GRID[best[len(best) // 2]])                  # si prende il centro: piu' robusto del bordo
+    best = np.flatnonzero(score >= score.max() - 1e-9)     
+    return int(GRID[best[len(best) // 2]])                  
 
 
 def evaluate(x, y, subj, min_tpr, max_fpr, k, min_n, seed):
@@ -216,7 +197,7 @@ def scalar_at_native(data, comp, deg, tol=1.0):
     return float(s.median()) if s.len() >= 20 else None
 
 
-# ---------------------------------------------------------------- costruzione
+
 def labelled_rules(data, args):
     rows = []
     for rule in RULES:
@@ -286,7 +267,7 @@ def compat_json(rows, include, unconfirmed=False):
     for r in rows:
         if r["component"].startswith("HeadPose") or r["status"] not in ok or r["component"] in out:
             continue
-        if r.get("needs_confirmation") and not unconfirmed:   # cartelle TONO non ancora confermate
+        if r.get("needs_confirmation") and not unconfirmed:  
             continue
         out[r["component"]] = {"method": "binary", "thresholds": [float(r["threshold"])],
                                "names": ["very_low", "high"], "source": r["source"], "status": r["status"],

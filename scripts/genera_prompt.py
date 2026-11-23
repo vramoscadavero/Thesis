@@ -9,7 +9,6 @@ from genera_soglie import read_many
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# fatto -> (frase difetto, frase aspetto positivo)
 FACTS = {
     "eyes_closed": ("eyes closed", "eyes open"),
     "face_occluded": ("face partly covered (for example by glasses)", "face unobstructed"),
@@ -29,7 +28,7 @@ PRIORITY = ["eyes_closed", "face_occluded", "eyes_covered", "head_covering", "no
 
 ROBUST = {"head_covering", "not_neutral", "not_neutral_tono", "mouth_open", "blurry", "bad_exposure",
           "uneven_light", "bad_background"}
-POSE_DEFAULT = {"turned": 98, "strongly_turned": 65}   # usati solo se mancano nel JSON
+POSE_DEFAULT = {"turned": 98, "strongly_turned": 65}  
 
 
 def load_facts(soglie_path, include_status=("validated",), include_unconfirmed=False):
